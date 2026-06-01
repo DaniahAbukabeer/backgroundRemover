@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "http://localhost:5000")
+ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000")
 
 app.add_middleware(
     CORSMiddleware,
@@ -25,7 +25,7 @@ app.add_middleware(
 )
 
 logger.info("Loading rembg model, please wait...")
-session = new_session("isnet-general-use")
+session = new_session("birefnet-general-lite")
 logger.info("Model ready")
 
 
