@@ -4,3 +4,8 @@
 /bin
 /include
 /pyvenv.cfg
+
+cpu_test/
+cpu_test/**
+
+*.log
