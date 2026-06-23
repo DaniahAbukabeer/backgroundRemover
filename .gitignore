@@ -9,3 +9,4 @@ cpu_test/
 cpu_test/**
 
 *.log
+.DS_Store
