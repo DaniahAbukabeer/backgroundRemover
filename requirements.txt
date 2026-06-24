@@ -4,3 +4,4 @@ rembg[cpu] # rembg[gpu] for GPU support
 pillow
 python-multipart
 python-dotenv
+modal

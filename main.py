@@ -1,72 +1,90 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.responses import Response
-from rembg import remove, new_session
-from PIL import Image
-from dotenv import load_dotenv
 import io
 import os
 import logging
+import modal
 
-load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
-
-ALLOWED_ORIGIN = os.getenv("ALLOWED_ORIGIN", "http://localhost:3000")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],
-    allow_methods=["POST", "GET"],
-    allow_headers=["*"],
+# Define the container image
+image = (
+    modal.Image.debian_slim()
+    .apt_install("libgl1", "libglib2.0-0")
+    .pip_install(
+        "rembg[cpu]",
+        "pillow",
+        "python-multipart",
+        "fastapi",
+    )
+    .run_python(
+        "from rembg import new_session; new_session('birefnet-general-lite')"  #change modal here!!
+    )
 )
 
-logger.info("Loading rembg model, please wait...")
-session = new_session("birefnet-general-lite")
-logger.info("Model ready")
+app = modal.App("bg-service", image=image)
 
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+@app.cls(
+    cpu=2,
+    memory=1024,
+    container_idle_timeout=300,
+    secrets=[modal.Secret.from_name("bg-service-secrets")]
+)
+class BackgroundRemover:
+    def __enter__(self):
+        # Runs once when container starts — model stays loaded for all requests
+        from rembg import new_session
+        logger.info("Loading rembg model, please wait...")
+        self.session = new_session("birefnet-general-lite")  # your model
+        logger.info("Model ready")
 
+    @modal.web_endpoint(method="GET")
+    def health(self):
+        return {"status": "ok"}
 
-@app.post("/remove-background")
-async def remove_background(file: UploadFile = File(...)):
-    allowed_types = ["image/png", "image/jpeg", "image/webp"]
-    if file.content_type not in allowed_types:
-        raise HTTPException(status_code=400, detail=f"Unsupported type: {file.content_type}")
+    @modal.web_endpoint(method="POST")
+    async def remove_background(
+        self,
+        file: UploadFile = File(...),
+        x_api_key: str = Header(None)
+    ):
+        # API key validation
+        expected_key = os.environ.get("INTERNAL_API_KEY")
+        if expected_key and x_api_key != expected_key:
+            raise HTTPException(status_code=401, detail="Unauthorized")
 
-    contents = await file.read()
+        # Validate file type — same as your original
+        allowed_types = ["image/png", "image/jpeg", "image/webp"]
+        if file.content_type not in allowed_types:
+            raise HTTPException(status_code=400, detail=f"Unsupported type: {file.content_type}")
 
-    if len(contents) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File too large, max 10MB")
+        contents = await file.read()
 
-    try:
-        logger.info(f"Processing: {file.filename} ({len(contents)} bytes)")
+        if len(contents) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="File too large, max 10MB")
 
-        output_bytes = remove(contents, session=session)
+        try:
+            from rembg import remove
+            from PIL import Image
 
-        img = Image.open(io.BytesIO(output_bytes))
-        if img.mode != "RGBA":
-            img = img.convert("RGBA")
+            logger.info(f"Processing: {file.filename} ({len(contents)} bytes)")
 
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        buffer.seek(0)
+            output_bytes = remove(contents, session=self.session)
 
-        logger.info(f"Done: {file.filename}")
-        return Response(content=buffer.read(), media_type="image/png")
+            img = Image.open(io.BytesIO(output_bytes))
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
 
-    except Exception as e:
-        logger.error(f"Failed: {str(e)}")
-        raise HTTPException(status_code=500, detail="Background removal failed")
+            buffer = io.BytesIO()
+            img.save(buffer, format="PNG")
+            buffer.seek(0)
 
+            logger.info(f"Done: {file.filename}")
+            return Response(content=buffer.read(), media_type="image/png")
 
-if __name__ == "__main__":
-    import uvicorn
-    port = int(os.getenv("PORT", 8004))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+        except Exception as e:
+            logger.error(f"Failed: {str(e)}")
+            raise HTTPException(status_code=500, detail="Background removal failed")
