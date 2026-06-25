@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-rembg[cpu] # rembg[gpu] for GPU support
+rembg[gpu]
 pillow
 python-multipart
 python-dotenv
