@@ -1,15 +1,13 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, Header
-from fastapi.responses import Response
+import modal
 import io
 import os
 import logging
-import modal
-
+from fastapi import UploadFile, File, HTTPException, Header
+from fastapi.responses import Response
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Define the container image
 image = (
     modal.Image.debian_slim()
     .apt_install("libgl1", "libglib2.0-0")
@@ -19,8 +17,8 @@ image = (
         "python-multipart",
         "fastapi",
     )
-    .run_python(
-        "from rembg import new_session; new_session('birefnet-general-lite')"  #change modal here!!
+    .run_commands(
+        "python -c \"from rembg import new_session; new_session('birefnet-general-lite')\""
     )
 )
 
@@ -30,33 +28,32 @@ app = modal.App("bg-service", image=image)
 @app.cls(
     cpu=2,
     memory=1024,
-    container_idle_timeout=300,
+    scaledown_window=300,
+    min_containers=1, 
     secrets=[modal.Secret.from_name("bg-service-secrets")]
 )
 class BackgroundRemover:
-    def __enter__(self):
-        # Runs once when container starts — model stays loaded for all requests
+    @modal.enter()
+    def load_model(self):
         from rembg import new_session
         logger.info("Loading rembg model, please wait...")
-        self.session = new_session("birefnet-general-lite")  # your model
+        self.session = new_session("birefnet-general-lite")
         logger.info("Model ready")
 
-    @modal.web_endpoint(method="GET")
+    @modal.fastapi_endpoint(method="GET")
     def health(self):
         return {"status": "ok"}
 
-    @modal.web_endpoint(method="POST")
+    @modal.fastapi_endpoint(method="POST")
     async def remove_background(
         self,
         file: UploadFile = File(...),
         x_api_key: str = Header(None)
     ):
-        # API key validation
         expected_key = os.environ.get("INTERNAL_API_KEY")
         if expected_key and x_api_key != expected_key:
             raise HTTPException(status_code=401, detail="Unauthorized")
 
-        # Validate file type — same as your original
         allowed_types = ["image/png", "image/jpeg", "image/webp"]
         if file.content_type not in allowed_types:
             raise HTTPException(status_code=400, detail=f"Unsupported type: {file.content_type}")
